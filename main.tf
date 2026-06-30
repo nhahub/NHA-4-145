@@ -1,7 +1,6 @@
-# ==================== AMI Dynamic Search ====================
 data "aws_ami" "centos_stream" {
   most_recent = true
-  owners      = ["125523088429"] # هذا هو الـ ID الرسمي لـ CentOS في AWS
+  owners      = ["125523088429"] 
 
   filter {
     name   = "name"
@@ -13,12 +12,12 @@ data "aws_ami" "centos_stream" {
     values = ["x86_64"]
   }
 }
-# ==================== SSH KEY UPLOAD ====================
+
 resource "aws_key_pair" "depi_key" {
   key_name   = "depi_key"
   public_key = file("C:/Users/Salma/.ssh/depi_key.pub")
 }
-# ==================== NETWORK ====================
+
 
 resource "aws_vpc" "depi_vpc" {
   cidr_block           = var.vpc_cidr
@@ -62,14 +61,13 @@ resource "aws_route_table_association" "public_assoc" {
   route_table_id = aws_route_table.public_rt.id
 }
 
-# ==================== SECURITY GROUPS ====================
 
 resource "aws_security_group" "devops_sg" {
   name        = "depi-devops-sg"
   description = "Security Group for CI/CD and K8s Clusters"
   vpc_id      = aws_vpc.depi_vpc.id
 
-  # --- SSH ---
+
   ingress {
     from_port   = 22
     to_port     = 22
@@ -77,7 +75,6 @@ resource "aws_security_group" "devops_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # --- Jenkins ---
   ingress {
     from_port   = 8080
     to_port     = 8080
@@ -85,7 +82,6 @@ resource "aws_security_group" "devops_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # --- App/Other Services ---
   ingress {
     from_port   = 9000
     to_port     = 9000
@@ -107,7 +103,6 @@ resource "aws_security_group" "devops_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # --- K8s API Server ---
   ingress {
     from_port   = 6443
     to_port     = 6443
@@ -115,7 +110,6 @@ resource "aws_security_group" "devops_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # --- Internal Communication (Crucial for K8s) ---
   ingress {
     from_port = 0
     to_port   = 0
@@ -123,7 +117,6 @@ resource "aws_security_group" "devops_sg" {
     self      = true 
   }
 
-  # --- Allow Outbound ---
   egress {
     from_port   = 0
     to_port     = 0
@@ -132,31 +125,25 @@ resource "aws_security_group" "devops_sg" {
   }
 }
 
-# ==================== COMPUTING (3 السيرفرات) ====================
 locals {
   server_names = ["Jenkins-CI-CD", "K8s-Master", "K8s-Worker"]
   
   jenkins_script = <<-EOF
   #!/bin/bash
-  # تحديث النظام
+ 
   sudo dnf update -y
   
-  # تثبيت الجافا (الإصدار المطلوب لـ Jenkins)
   sudo dnf install java-17-openjdk -y
   
-  # تحميل وإضافة مستودع جينكنز
   sudo wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
   sudo rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
   
-  # تثبيت جينكنز
   sudo dnf install jenkins -y
   
-  # ضبط الأذونات والتشغيل
   sudo systemctl daemon-reload
   sudo systemctl enable jenkins
   sudo systemctl start jenkins
   
-  # الانتظار للتأكد من إنشاء ملف الـ password
   sleep 30
   EOF
 }
