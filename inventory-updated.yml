@@ -1,0 +1,29 @@
+---
+[kubernetes:children]
+masters
+workers
+
+[masters]
+k8s-master ansible_host=34.200.227.9 ansible_user=root
+
+[workers]
+k8s-worker-1 ansible_host=44.204.132.61 ansible_user=root
+
+[kubernetes:vars]
+ansible_ssh_private_key_file=~/.ssh/depi_key
+
+# Monitoring
+prometheus_retention=15d
+prometheus_storage=50Gi
+grafana_admin_password=admin
+loki_storage=100Gi
+
+# ArgoCD
+argocd_namespace=argocd
+argocd_admin_password=admin
+
+# Smart Meds App
+smart_meds_namespace=smart-meds
+smart_meds_replicas=3
+smart_meds_image=docker-hub-username/smart-meds:latest
+smart_meds_port=8080

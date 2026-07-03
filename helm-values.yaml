@@ -1,0 +1,64 @@
+replicaCount: 3
+
+image:
+  repository: docker-hub-username/smart-meds
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8080
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: smart-meds.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: smart-meds-tls
+      hosts:
+        - smart-meds.local
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClassName: standard
+
+database:
+  host: smart-meds-db
+  port: 5432
+  name: smart_meds
+  username: admin
+
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 30s
+  logging:
+    enabled: true
+    level: info
+
+environment:
+  APP_ENV: production
+  LOG_LEVEL: info
+  DATABASE_POOL_SIZE: "20"
