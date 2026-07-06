@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>حجز موعد | CareFlow</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css"> 
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+
+<body>
+
+<!-- الـ Navbar الموحد -->
+<div class="navbar">
+    <div class="logo-area">
+        <i class="fas fa-heartbeat"></i>
+        <span>CareFlow | تدفق الرعاية</span>
+    </div>
+    <div class="nav-links">
+        <a href="index.html"><i class="fas fa-home"></i> الرئيسية</a>
+        <a href="notifications page.html"><i class="fas fa-bell"></i> الإشعارات</a>
+        <a href="profile.html"><i class="fas fa-user"></i> الملف الشخصي</a>
+    </div>
+</div>
+
+<div class="container">
+    <div class="card" style="max-width: 600px;"> <!-- عرض مناسب للفورم لتظهر في المنتصف -->
+        <h2><i class="fas fa-calendar-plus"></i> حجز موعد جديد</h2>
+        <p style="margin-bottom: 20px; color: #666; font-size: 14px;">يرجى ملء البيانات التالية لتحديد موعد استلام الدواء:</p>
+
+        <div id="messageBox" style="display:none; margin-bottom: 15px; padding: 12px; border-radius: 8px;"></div>
+
+        <label>اختر المستشفى / الوحدة الصحية</label>
+        <select id="hospitalSelect">
+            <option value="">جاري تحميل المستشفيات...</option>
+        </select>
+
+        <label>اختر الدواء</label>
+        <select id="medicineSelect" disabled>
+            <option value="">برجاء اختيار مستشفى أولاً</option>
+        </select>
+
+        <label>تاريخ الحجز</label>
+        <input type="date" id="reservationDate">
+
+        <label>وقت الحجز</label>
+        <input type="time" id="reservationTime">
+
+        <button class="btn full-btn" id="bookingBtn">
+            <i class="fas fa-check-circle"></i> تأكيد حجز الموعد
+        </button>
+    </div>
+</div>
+
+<script src="script.js"></script>
+<script>
+    window.onload = function() {
+        if(typeof loadHospitals === "function") loadHospitals();
+    };
+
+    document.getElementById("bookingBtn").onclick = async function() {
+        const msg = document.getElementById("messageBox");
+        const date = document.getElementById("reservationDate").value;
+        const time = document.getElementById("reservationTime").value;
+        const hospital = document.getElementById("hospitalSelect").value;
+        const medicine = document.getElementById("medicineSelect").value;
+
+        if (!date || !time || !hospital || !medicine) {
+            msg.style.display = "block";
+            msg.style.backgroundColor = "#ffebee";
+            msg.style.color = "#c62828";
+            msg.innerText = "يرجى ملء جميع البيانات ⚠️";
+            return;
+        }
+
+        try {
+            msg.style.display = "block";
+            msg.style.backgroundColor = "#e3f2fd";
+            msg.style.color = "#0d47a1";
+            msg.innerText = "جاري إرسال الطلب...";
+
+            const success = await bookAppointment();
+            if (success) {
+                msg.style.backgroundColor = "#e8f5e9";
+                msg.style.color = "#2e7d32";
+                msg.innerText = "تم حجز الموعد بنجاح! سيتم تحويلك الآن... ✅";
+            }
+        } catch (error) {
+            msg.style.display = "block";
+            msg.style.backgroundColor = "#ffebee";
+            msg.style.color = "#c62828";
+            msg.innerText = "حدث خطأ في الاتصال ❌";
+        }
+    };
+</script>
+</body>
+</html>
