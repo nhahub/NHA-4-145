@@ -2,8 +2,8 @@
 masters
 workers
 
-[masters]
-k8s-master ansible_host=18.215.186.201 ansible_user=ec2-user
+k8s-master:
+  ansible_connection: local
 
 [workers]
 k8s-worker-1 ansible_host=100.52.196.57 ansible_user=ec2-user
