@@ -55,14 +55,13 @@
         state: started
         enabled: yes
 
-    - name: "Add Kubernetes repository"
+   - name: "Add Kubernetes repository"
       yum_repository:
         name: kubernetes
         description: Kubernetes
         baseurl: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/
         enabled: yes
-        gpgcheck: yes
-        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/Release.key
+        gpgcheck: no
 
     - name: "Install Kubernetes tools"
       dnf:
