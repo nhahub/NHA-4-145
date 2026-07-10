@@ -5,18 +5,18 @@
   vars:
     kubeconfig_path: /etc/kubernetes/admin.conf
 
-  # نضع المتغيرات هنا ليراها الـ Playbook بالكامل
-  environment:
-    KUBECONFIG: "{{ kubeconfig_path }}"
-
   tasks:
     - name: "Create argocd namespace"
       shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: "Add and update ArgoCD Helm repository"
       shell: |
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: "Install/Upgrade ArgoCD using Helm"
       shell: |
@@ -24,6 +24,8 @@
           -n argocd \
           --set configs.secret.argocdServerAdminPassword='admin' \
           --wait --timeout 10m
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
       retries: 3
       delay: 10
 
@@ -33,6 +35,8 @@
           -l app.kubernetes.io/name=argocd-server \
           -n argocd \
           --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
       ignore_errors: yes
 
     - name: "Create Smart Meds ArgoCD Application manifest"
@@ -62,6 +66,8 @@
 
     - name: "Apply Smart Meds Application to ArgoCD"
       shell: kubectl apply -f /tmp/smart-meds-app.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
     - name: "Display and Register ArgoCD status"
       shell: |
@@ -69,6 +75,8 @@
         kubectl get pods -n argocd
         echo "=== Apps ==="
         kubectl get applications -n argocd
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
       register: argocd_status
 
     - name: "Print ArgoCD status to console"
