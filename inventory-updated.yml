@@ -1,27 +1,29 @@
+[jenkins]
+jenkins_server ansible_host=44.223.73.195 ansible_user=ec2-user
+
 [masters]
-k8s-master ansible_connection=local
+k8s-master ansible_host=18.233.200.147 ansible_user=ec2-user
 
 [workers]
-k8s-worker-1 ansible_host=10.0.1.170 ansible_user=ec2-user
+k8s-worker-1 ansible_host=100.53.84.147 ansible_user=ec2-user
+k8s-worker-2 ansible_host=44.192.131.44 ansible_user=ec2-user
 
 [kubernetes:children]
 masters
 workers
 
 [kubernetes:vars]
-ansible_ssh_private_key_file=~/.ssh/depi_key.pem
+# تأكدي أن المسار هنا هو المكان اللي نقلنا فيه المفتاح فعلياً في مجلد المشروع
+ansible_ssh_private_key_file=./my_new_key.pem
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
-# Monitoring
+# باقي الإعدادات بتاعتك
 prometheus_retention=15d
 prometheus_storage=50Gi
 grafana_admin_password=admin
 loki_storage=100Gi
-
-# ArgoCD
 argocd_namespace=argocd
 argocd_admin_password=admin
-
-# Smart Meds App
 smart_meds_namespace=smart-meds
 smart_meds_replicas=3
 smart_meds_image=docker-hub-username/smart-meds:latest
