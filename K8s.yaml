@@ -22,6 +22,7 @@
           - net-tools
           - python3-pip
           - iproute-tc
+          - dnf-plugins-core
         state: present
 
     - name: "Disable SELinux and Firewalld settings"
@@ -34,6 +35,11 @@
         swapoff -a
         sed -i '/ swap / s/^/#/' /etc/fstab
       ignore_errors: yes
+
+    - name: "Add Docker repository"
+      command: dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
 
     - name: "Install Docker"
       dnf:
