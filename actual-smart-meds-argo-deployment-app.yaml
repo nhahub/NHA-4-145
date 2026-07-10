@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: smart-meds
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/nhahub/NHA-4-145.git
+    targetRevision: cd/argocd
+    path: .
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: smart-meds
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
