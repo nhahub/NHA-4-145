@@ -1,11 +1,8 @@
 ---
-- name: "Kubernetes Cluster Setup (All Nodes)"
+- name: "Kubernetes Cluster Setup (All Nodes) "
   hosts: kubernetes
   gather_facts: yes
   become: yes
-  # التأكد من استخدام المفتاح المعرف في inventory-updated.yml
-  vars:
-    ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
   tasks:
     - name: "Update system packages"
       dnf:
@@ -251,6 +248,10 @@
       shell: kubeadm token create --print-join-command
       register: kubeadm_join_cmd
       changed_when: false
+
+    - name: "Display join command"
+      debug:
+        msg: "{{ kubeadm_join_cmd.stdout }}"
 
     - name: "Wait for API server to be ready"
       shell: |
