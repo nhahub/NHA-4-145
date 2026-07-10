@@ -75,11 +75,20 @@
       args:
         creates: /etc/kubernetes/admin.conf
 
-    - name: "Configure .kube"
+  - name: "Create .kube directory"
       file:
         path: /root/.kube
         state: directory
-      command: cp /etc/kubernetes/admin.conf /root/.kube/config
+        mode: '0755'
+
+    - name: "Copy admin kubeconfig"
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
 
     - name: "Generate join command"
       shell: kubeadm token create --print-join-command
