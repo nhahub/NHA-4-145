@@ -75,7 +75,7 @@
       args:
         creates: /etc/kubernetes/admin.conf
 
-  - name: "Create .kube directory"
+    - name: "Create .kube directory"
       file:
         path: /root/.kube
         state: directory
