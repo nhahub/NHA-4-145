@@ -49,9 +49,21 @@
           - containerd.io
         state: present
 
-    - name: "Start Docker"
+    - name: "Load br_netfilter kernel module"
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: "Set bridge-nf-call-iptables"
+      sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: '1'
+        state: present
+        reload: yes
+
+    - name: "Ensure containerd is started and enabled"
       systemd:
-        name: docker
+        name: containerd
         state: started
         enabled: yes
 
@@ -85,7 +97,7 @@
     ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
   tasks:
     - name: "Initialize cluster"
-      shell: kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=NumCPU,Mem
+      shell: kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=NumCPU,Mem,CRI
       args:
         creates: /etc/kubernetes/admin.conf
 
