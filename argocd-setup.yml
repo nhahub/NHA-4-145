@@ -3,39 +3,48 @@
   hosts: masters
   gather_facts: yes
   become: yes
+  vars:
+    # نستخدم المسار القياسي للـ kubeconfig في الكلاستر
+    kubeconfig_path: /etc/kubernetes/admin.conf
+
   tasks:
     - name: "Create argocd namespace"
       shell: |
         kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
       environment:
-        KUBECONFIG: /root/.kube/config
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: "Install ArgoCD using Helm"
+    - name: "Add and update ArgoCD Helm repository"
       shell: |
         helm repo add argo https://argoproj.github.io/argo-helm
         helm repo update
-        helm install argocd argo/argo-cd \
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: "Install/Upgrade ArgoCD using Helm"
+      shell: |
+        helm upgrade --install argocd argo/argo-cd \
           -n argocd \
           --set configs.secret.argocdServerAdminPassword='admin' \
-          --wait \
-          --timeout 10m
+          --wait --timeout 10m
       environment:
-        KUBECONFIG: /root/.kube/config
+        KUBECONFIG: "{{ kubeconfig_path }}"
       retries: 3
       delay: 10
 
-    - name: "Wait for ArgoCD to be ready"
+    - name: "Wait for ArgoCD server to be ready"
       shell: |
         kubectl wait --for=condition=ready pod \
           -l app.kubernetes.io/name=argocd-server \
           -n argocd \
           --timeout=300s
       environment:
-        KUBECONFIG: /root/.kube/config
+        KUBECONFIG: "{{ kubeconfig_path }}"
       ignore_errors: yes
 
-    - name: "Create Smart Meds ArgoCD Application"
+    - name: "Create Smart Meds ArgoCD Application manifest"
       copy:
+        dest: /tmp/smart-meds-app.yaml
         content: |
           apiVersion: argoproj.io/v1alpha1
           kind: Application
@@ -57,33 +66,26 @@
                 selfHeal: true
               syncOptions:
               - CreateNamespace=true
-        dest: /tmp/smart-meds-app.yaml
 
-    - name: "Apply Smart Meds ArgoCD Application"
+    - name: "Apply Smart Meds Application to ArgoCD"
       shell: |
         kubectl apply -f /tmp/smart-meds-app.yaml
       environment:
-        KUBECONFIG: /root/.kube/config
+        KUBECONFIG: "{{ kubeconfig_path }}"
 
-    - name: "Display ArgoCD status"
+    - name: "Display and Register ArgoCD status"
       shell: |
-        echo "========== ARGOCD STATUS =========="
+        echo "=== Status ==="
         kubectl get pods -n argocd
-        echo ""
-        echo "========== ARGOCD SERVICE =========="
-        kubectl get svc -n argocd
-        echo ""
-        echo "========== ARGOCD ACCESS =========="
-        echo "Username: admin"
-        echo "Password: admin"
-        echo "Port forward: kubectl port-forward -n argocd svc/argocd-server 8080:443"
-        echo ""
-        echo "========== ARGOCD APPLICATIONS =========="
+        echo "=== Access ==="
+        echo "Username: admin | Password: admin"
+        echo "Port forward: kubectl port-forward -n argocd svc/argocd-server 8080:443 --address 0.0.0.0"
+        echo "=== Apps ==="
         kubectl get applications -n argocd
       environment:
-        KUBECONFIG: /root/.kube/config
+        KUBECONFIG: "{{ kubeconfig_path }}"
       register: argocd_status
 
-    - name: "Print ArgoCD status"
+    - name: "Print ArgoCD status to console"
       debug:
         msg: "{{ argocd_status.stdout_lines }}"
