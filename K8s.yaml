@@ -55,7 +55,7 @@
         state: started
         enabled: yes
 
-   - name: "Add Kubernetes repository"
+    - name: "Add Kubernetes repository"
       yum_repository:
         name: kubernetes
         description: Kubernetes
