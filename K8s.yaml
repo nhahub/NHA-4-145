@@ -3,8 +3,7 @@
   hosts: kubernetes
   gather_facts: yes
   become: yes
-  vars:
-    ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
+  become_method: sudo
   tasks:
     - name: "Update system packages"
       dnf:
@@ -22,13 +21,67 @@
           - net-tools
           - python3-pip
           - iproute-tc
-          - dnf-plugins-core
         state: present
 
-    - name: "Disable SELinux and Firewalld settings"
+    - name: "Add host names to /etc/hosts"
+      lineinfile:
+        path: "/etc/hosts"
+        line: "{{ ansible_default_ipv4.address }} {{ inventory_hostname }}"
+
+    - name: "Disable SELinux (set to permissive)"
       selinux:
         policy: targeted
         state: permissive
+
+    - name: "Set SELinux to disabled in config file"
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: SELINUX=disabled
+      register: selinux_disabled
+
+    - name: "Load Kernel Modules"
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - ip_vs
+        - ip_vs_rr
+        - ip_vs_wrr
+        - ip_vs_sh
+        - overlay
+
+    - name: "Add kubernetes.conf to /etc/modules-load.d"
+      copy:
+        content: |
+          br_netfilter
+          ip_vs
+          ip_vs_rr
+          ip_vs_wrr
+          ip_vs_sh
+          overlay
+        dest: /etc/modules-load.d/kubernetes.conf
+        mode: '0644'
+
+    - name: "Configure Sysctl for Kubernetes"
+      copy:
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv6.conf.all.forwarding = 1
+        dest: /etc/sysctl.d/kubernetes.conf
+        mode: '0644'
+
+    - name: "Reload Sysctl"
+      sysctl:
+        reload: yes
+
+    - name: "Reboot if SELinux was changed"
+      reboot:
+        reboot_timeout: 300
+      when: selinux_disabled.changed
 
     - name: "Disable Swap"
       shell: |
@@ -36,44 +89,93 @@
         sed -i '/ swap / s/^/#/' /etc/fstab
       ignore_errors: yes
 
+    - name: "Install Docker prerequisite packages"
+      dnf:
+        name:
+          - dnf-plugins-core
+        state: present
+
     - name: "Add Docker repository"
       command: dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
       args:
         creates: /etc/yum.repos.d/docker-ce.repo
 
-    - name: "Install Docker"
+    - name: "Install Docker and containerd"
       dnf:
         name:
           - docker-ce
           - docker-ce-cli
           - containerd.io
+          - docker-compose-plugin
         state: present
+        allowerasing: yes
 
-    - name: "Load br_netfilter kernel module"
-      modprobe:
-        name: br_netfilter
-        state: present
+    - name: "Create /etc/containerd directory"
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
 
-    - name: "Set bridge-nf-call-iptables"
-      sysctl:
-        name: net.bridge.bridge-nf-call-iptables
-        value: '1'
-        state: present
-        reload: yes
+    - name: "Generate default containerd config"
+      shell: containerd config default > /etc/containerd/config.toml
 
-    - name: "Ensure containerd is started and enabled"
+    - name: "Enable SystemdCgroup in containerd"
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: "Restart and enable containerd"
       systemd:
         name: containerd
-        state: started
+        state: restarted
         enabled: yes
+        daemon_reload: yes
+
+    - name: "Verify containerd CRI is working"
+      command: crictl --runtime-endpoint unix:///var/run/containerd/containerd.sock version
+      register: crictl_check
+      changed_when: false
+      retries: 5
+      delay: 5
+      until: crictl_check is succeeded
+
+    - name: "Create /etc/docker directory"
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: "Create Docker daemon.json"
+      copy:
+        content: |
+          {
+            "exec-opts": ["native.cgroupdriver=systemd"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "100m",
+              "max-file": "5"
+            },
+            "storage-driver": "overlay2"
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+
+    - name: "Start Docker daemon"
+      systemd:
+        name: docker
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
 
     - name: "Add Kubernetes repository"
       yum_repository:
         name: kubernetes
-        description: Kubernetes
+        description: Kubernetes Repository
         baseurl: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/
+        gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/Release.key
         enabled: yes
-        gpgcheck: no
 
     - name: "Install Kubernetes tools"
       dnf:
@@ -82,70 +184,160 @@
           - kubeadm
           - kubectl
         state: present
+        allowerasing: yes
 
-    - name: "Enable Kubelet"
+    - name: "Enable and start kubelet"
       systemd:
         name: kubelet
-        enabled: yes
         state: started
+        enabled: yes
+        daemon_reload: yes
 
 - name: "Initialize Kubernetes Master"
   hosts: masters
   gather_facts: yes
   become: yes
-  vars:
-    ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
+  become_method: sudo
   tasks:
-    - name: "Wait for containerd to be ready"
-      pause:
-        seconds: 20
+    - name: "Check if cluster is already initialized"
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_already_run
 
-    - name: "Pre-pull Kubernetes images"
-      shell: kubeadm config images pull
+    - name: "Pull Kubernetes images"
+      command: kubeadm config images pull --kubernetes-version v1.28.0
+      when: not kubeadm_already_run.stat.exists
 
-    - name: "Initialize cluster"
-      shell: kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=NumCPU,Mem,CRI
-      args:
-        creates: /etc/kubernetes/admin.conf
+    - name: "Initialize Kubernetes cluster"
+      shell: |
+        kubeadm init \
+          --apiserver-advertise-address={{ ansible_default_ipv4.address }} \
+          --pod-network-cidr=10.244.0.0/16 \
+          --service-cidr=10.96.0.0/12 \
+          --ignore-preflight-errors=NumCPU,Mem
+      when: not kubeadm_already_run.stat.exists
+      register: kubeadm_init_result
 
-    - name: "Create .kube directory"
+    - name: "Create .kube directory for ec2-user"
       file:
-        path: /root/.kube
+        path: /home/ec2-user/.kube
         state: directory
         mode: '0755'
+        owner: ec2-user
 
-    - name: "Copy admin kubeconfig"
+    - name: "Copy admin kubeconfig to ec2-user"
       copy:
         src: /etc/kubernetes/admin.conf
-        dest: /root/.kube/config
+        dest: /home/ec2-user/.kube/config
         remote_src: yes
-        owner: root
-        group: root
+        owner: ec2-user
         mode: '0600'
 
-    - name: "Generate join command"
-      shell: kubeadm token create --print-join-command
+    - name: "Generate join command for workers"
+      command: kubeadm token create --print-join-command
       register: kubeadm_join_cmd
+      changed_when: false
+
+    - name: "Save join command to file"
+      copy:
+        content: "{{ kubeadm_join_cmd.stdout }}"
+        dest: /tmp/join_command.sh
+        mode: '0755'
+
+    - name: "Fetch join command to control node"
+      fetch:
+        src: /tmp/join_command.sh
+        dest: /tmp/ansible_join_command.sh
+        flat: yes
+
+    - name: "Wait for API server to be ready"
+      command: kubectl get nodes
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      become_user: ec2-user
+      retries: 10
+      delay: 10
+      register: api_check
+      until: api_check is succeeded
+      changed_when: false
+
+    - name: "Install Calico CNI"
+      command: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/tigera-operator.yaml
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      become_user: ec2-user
+      retries: 3
+      delay: 10
+      register: calico_result
+      until: calico_result is succeeded
+
+    - name: "Wait for Calico operator"
+      command: >
+        kubectl wait --for=condition=ready pod
+        -l k8s-app=calico-operator
+        -n calico-system
+        --timeout=300s
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      become_user: ec2-user
+      ignore_errors: yes
 
 - name: "Join Worker Nodes to Cluster"
   hosts: workers
   gather_facts: yes
   become: yes
-  vars:
-    ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
+  become_method: sudo
   tasks:
-    - name: "Join node"
-      shell: "{{ hostvars[groups['masters'][0]]['kubeadm_join_cmd']['stdout'] }}"
-      ignore_errors: yes
+    - name: "Check if node already joined"
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: worker_already_joined
 
-- name: "Setup Jenkins Node"
-  hosts: jenkins
-  gather_facts: yes
+    - name: "Copy join command to worker"
+      copy:
+        src: /tmp/ansible_join_command.sh
+        dest: /tmp/join_command.sh
+        mode: '0755'
+      when: not worker_already_joined.stat.exists
+
+    - name: "Join worker to cluster"
+      command: sh /tmp/join_command.sh
+      when: not worker_already_joined.stat.exists
+      retries: 3
+      delay: 10
+      register: join_result
+      until: join_result is succeeded
+
+- name: "Verify Kubernetes Cluster"
+  hosts: masters
   become: yes
-  vars:
-    ansible_ssh_private_key_file: /home/ec2-user/my_new_key.pem
+  become_method: sudo
   tasks:
-    - name: "Install Java for Jenkins"
-      dnf:
-        name: java-17-openjdk
-        state: present
+    - name: "Wait for all nodes to be Ready"
+      shell: |
+        kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      become_user: ec2-user
+      retries: 30
+      delay: 10
+      register: nodes_status
+      until: "'True' in nodes_status.stdout"
+      changed_when: false
+
+    - name: "Display cluster information"
+      shell: |
+        echo "========== NODES =========="
+        kubectl get nodes -o wide
+        echo ""
+        echo "========== PODS =========="
+        kubectl get pods -A
+      environment:
+        KUBECONFIG: /home/ec2-user/.kube/config
+      become_user: ec2-user
+      register: cluster_info
+      changed_when: false
+
+    - name: "Print cluster status"
+      debug:
+        msg: "{{ cluster_info.stdout_lines }}"
