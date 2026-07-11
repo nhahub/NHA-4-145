@@ -8,7 +8,6 @@ image:
 nameOverride: smart-meds-frontend
 fullnameOverride: smart-meds-frontend
 
-namespace: smart-meds
 
 service:
   type: NodePort
