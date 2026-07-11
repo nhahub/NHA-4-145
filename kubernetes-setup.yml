@@ -1,0 +1,359 @@
+---
+- name: "Kubernetes Cluster Setup (All Nodes) -"
+  hosts: kubernetes
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: "Update system packages"
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+
+    - name: "Install required packages"
+      dnf:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - net-tools
+          - python3-pip
+          - iproute-tc
+        state: present
+
+    - name: "Add host names to /etc/hosts"
+      lineinfile:
+        path: "/etc/hosts"
+        line: "{{ ansible_default_ipv4.address }} {{ inventory_hostname }}"
+
+    - name: "Disable SELinux (set to permissive)"
+      selinux:
+        policy: targeted
+        state: permissive
+
+    - name: "Set SELinux to disabled in config file"
+      lineinfile:
+        path: /etc/selinux/config
+        regexp: '^SELINUX='
+        line: SELINUX=disabled
+      register: selinux_disabled
+
+    - name: "Reboot if SELinux was changed"
+      reboot:
+        reboot_timeout: 300
+      when: selinux_disabled.changed
+
+    - name: "Enable firewalld"
+      systemd:
+        name: firewalld
+        state: started
+        enabled: yes
+
+    - name: "Open Kubernetes API port (6443)"
+      firewalld:
+        port: 6443/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: "Open Kubelet port (10250)"
+      firewalld:
+        port: 10250/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: "Open NodePort range (30000-32767)"
+      firewalld:
+        port: 30000-32767/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: "Open etcd port (2379-2380)"
+      firewalld:
+        port: 2379-2380/tcp
+        permanent: yes
+        state: enabled
+        immediate: yes
+
+    - name: "Configure firewall for pod network"
+      firewalld:
+        masquerade: yes
+        state: enabled
+        permanent: yes
+        zone: public
+        immediate: yes
+
+    - name: "Load Kernel Modules"
+      modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - br_netfilter
+        - ip_vs
+        - ip_vs_rr
+        - ip_vs_wrr
+        - ip_vs_sh
+        - overlay
+
+    - name: "Add kubernetes.conf to /etc/modules-load.d"
+      copy:
+        content: |
+          br_netfilter
+          ip_vs
+          ip_vs_rr
+          ip_vs_wrr
+          ip_vs_sh
+          overlay
+        dest: /etc/modules-load.d/kubernetes.conf
+        mode: '0644'
+
+    - name: "Configure Sysctl for Kubernetes"
+      copy:
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv6.conf.all.forwarding = 1
+        dest: /etc/sysctl.d/kubernetes.conf
+        mode: '0644'
+
+    - name: "Reload Sysctl"
+      sysctl:
+        reload: yes
+
+    - name: "Disable Swap"
+      shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+      ignore_errors: yes
+
+    - name: "Install Docker prerequisite packages"
+      dnf:
+        name:
+          - dnf-plugins-core
+        state: present
+
+    - name: "Add Docker repository"
+      command: dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+      args:
+        creates: /etc/yum.repos.d/docker-ce.repo
+
+    - name: "Install Docker"
+      dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        allowerasing: yes
+
+    - name: "Create Docker daemon.json"
+      copy:
+        content: |
+          {
+            "exec-opts": ["native.cgroupdriver=systemd"],
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "100m",
+              "max-file": "5"
+            },
+            "storage-driver": "overlay2"
+          }
+        dest: /etc/docker/daemon.json
+        mode: '0644'
+
+    - name: "Create /etc/docker directory"
+      file:
+        path: /etc/docker
+        state: directory
+        mode: '0755'
+
+    - name: "Start Docker daemon"
+      systemd:
+        name: docker
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: "Generate default containerd config (enables the CRI plugin)"
+      shell: containerd config default > /etc/containerd/config.toml
+
+    - name: "Set SystemdCgroup driver for containerd"
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: "Restart containerd with the new config"
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: "Add Kubernetes repository"
+      yum_repository:
+        name: kubernetes
+        description: Kubernetes Repository
+        baseurl: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/
+        gpgcheck: yes
+        gpgkey: https://pkgs.k8s.io/core:/stable:/v1.28/rpm/Release.key
+        enabled: yes
+
+    - name: "Install Kubernetes tools"
+      dnf:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        allowerasing: yes
+
+    - name: "Enable and start kubelet"
+      systemd:
+        name: kubelet
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+- name: "Initialize Kubernetes Master"
+  hosts: masters
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: "Check if cluster is already initialized"
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_already_run
+
+    - name: "Pull Kubernetes images"
+      shell: kubeadm config images pull --kubernetes-version v1.28.0
+      when: not kubeadm_already_run.stat.exists
+
+    - name: "Initialize Kubernetes cluster"
+      shell: |
+        kubeadm init \
+          --apiserver-advertise-address={{ ansible_default_ipv4.address }} \
+          --pod-network-cidr=10.244.0.0/16 \
+          --service-cidr=10.96.0.0/12 \
+          --control-plane-endpoint={{ inventory_hostname }}:6443 \
+          --ignore-preflight-errors=NumCPU,Mem
+      when: not kubeadm_already_run.stat.exists
+      register: kubeadm_init_result
+
+    - name: "Create .kube directory for root"
+      file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: "Copy admin kubeconfig"
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0600'
+
+    - name: "Generate join command for workers"
+      shell: kubeadm token create --print-join-command
+      register: kubeadm_join_cmd
+      changed_when: false
+
+    - name: "Display join command"
+      debug:
+        msg: "{{ kubeadm_join_cmd.stdout }}"
+
+    - name: "Wait for API server to be ready"
+      shell: |
+        kubectl get nodes
+      environment:
+        KUBECONFIG: /root/.kube/config
+      retries: 10
+      delay: 10
+      register: api_check
+      until: api_check is succeeded
+
+    - name: "Install Calico CNI plugin"
+      shell: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/tigera-operator.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: calico_install
+      until: calico_install is succeeded
+      retries: 3
+      delay: 10
+
+    - name: "Wait for Calico operator to be ready"
+      shell: |
+        kubectl wait --for=condition=ready pod \
+          -l k8s-app=calico-operator \
+          -n calico-system \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      ignore_errors: yes
+
+    - name: "Save join command to file"
+      copy:
+        content: "{{ kubeadm_join_cmd.stdout }}"
+        dest: /tmp/join_command.sh
+        mode: '0755'
+
+- name: "Join Worker Nodes to Cluster"
+  hosts: workers
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: "Check if node already joined"
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: worker_already_joined
+
+    - name: "Join worker node to cluster"
+      shell: "{{ hostvars[groups['masters'][0]]['kubeadm_join_cmd']['stdout'] }}"
+      when: not worker_already_joined.stat.exists
+      retries: 3
+      delay: 10
+      ignore_errors: yes
+
+    - name: "Wait for node to join"
+      pause:
+        seconds: 15
+
+- name: "Verify Kubernetes Cluster"
+  hosts: masters
+  become: yes
+  tasks:
+    - name: "Wait for all nodes to be Ready"
+      shell: |
+        kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      environment:
+        KUBECONFIG: /root/.kube/config
+      retries: 30
+      delay: 10
+      register: nodes_status
+      until: "'True' in nodes_status.stdout"
+
+    - name: "Display cluster information"
+      shell: |
+        echo "========== NODES =========="
+        kubectl get nodes -o wide
+        echo ""
+        echo "========== CLUSTER INFO =========="
+        kubectl cluster-info
+        echo ""
+        echo "========== POD STATUS =========="
+        kubectl get pods -A
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: cluster_info
+
+    - name: "Print cluster status"
+      debug:
+        msg: "{{ cluster_info.stdout_lines }}"
