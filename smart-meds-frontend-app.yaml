@@ -1,0 +1,26 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: smart-meds-frontend
+  namespace: argocd
+
+spec:
+  destination:
+    namespace: smart-meds
+    server: https://kubernetes.default.svc
+
+  project: default
+
+  source:
+    path: smart-meds-frontend
+    repoURL: https://github.com/nhahub/NHA-4-145.git
+    targetRevision: ansible-k8s
+
+  syncPolicy:
+    automated:
+      enabled: true
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
