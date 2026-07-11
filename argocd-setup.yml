@@ -1,89 +1,73 @@
 ---
-- name: "Deploy ArgoCD for GitOps (Production Standard)"
+- name: "Deploy ArgoCD for GitOps (EC2 Optimized - Production Ready)"
   hosts: masters
   become: yes
   vars:
-    kubeconfig_path: /etc/kubernetes/admin.conf
+    kubeconfig_path: /home/ec2-user/.kube/config
     argocd_version: "7.7.0"
-    argocd_admin_password_hash: "$2a$10$rRyOOCXn3Z7Z2FwNfV68Ie1KRHBWC1gR2gXN1e3xM2J7/3f08m22q"
 
   tasks:
-    - name: "Install ArgoCD using Helm Module"
-      kubernetes.core.helm:
-        kubeconfig: "{{ kubeconfig_path }}"
-        name: argocd
-        chart_ref: argo/argo-cd
-        chart_version: "{{ argocd_version }}"
-        chart_repo_url: https://argoproj.github.io/argo-helm
-        release_namespace: argocd
-        create_namespace: true
-        wait: true
-        timeout: "10m0s"
-        values:
-          configs:
-            secret:
-              argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
-      register: helm_result
-      until: helm_result is succeeded
+    - name: "Add ArgoCD Helm repository safely"
+      ansible.builtin.shell: |
+        helm repo add argo https://argoproj.github.io/argo-helm || true
+        helm repo update
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: helm_repo_result
+      until: helm_repo_result.rc == 0
+      retries: 3
+      delay: 10
+
+    - name: "Install/Upgrade ArgoCD using Helm CLI (With Auto-Namespace)"
+      ansible.builtin.shell: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd \
+          --create-namespace \
+          --version "{{ argocd_version }}" \
+          --wait \
+          --timeout 10m
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: helm_install_result
+      until: helm_install_result.rc == 0
       retries: 3
       delay: 15
-      no_log: true
 
-    - name: "Wait for ArgoCD Application CRD to be established"
-      ansible.builtin.shell: |
-        kubectl wait --for condition=Established crd/applications.argoproj.io --timeout=120s
+    - name: "Wait until ArgoCD Application CRD exists in API Server"
+      ansible.builtin.command:
+        cmd: kubectl get crd applications.argoproj.io
       environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
         KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: crd_check
+      retries: 20
+      delay: 5
+      until: crd_check.rc == 0
       changed_when: false
 
-    - name: "Wait for ArgoCD server pods to be fully ready"
-      ansible.builtin.shell: |
-        kubectl wait --for=condition=ready pod \
-          -l app.kubernetes.io/name=argocd-server \
-          -n argocd \
+    - name: "Wait for ArgoCD deployments rollout (Rock-Solid Rollout Check)"
+      ansible.builtin.command:
+        cmd: >
+          kubectl rollout status deployment/{{ item }}
+          -n argocd
           --timeout=300s
+      loop:
+        - argocd-server
+        - argocd-repo-server
+        - argocd-application-controller
       environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
         KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
       changed_when: false
 
-    - name: "Deploy Smart Meds ArgoCD Application via K8s Module"
-      kubernetes.core.k8s:
-        kubeconfig: "{{ kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: argoproj.io/v1alpha1
-          kind: Application
-          metadata:
-            name: smart-meds
-            namespace: argocd
-          spec:
-            project: default
-            source:
-              repoURL: https://github.com/nhahub/NHA-4-145.git
-              targetRevision: main
-              path: helm/smart-meds
-            destination:
-              server: https://kubernetes.default.svc
-              namespace: smart-meds
-            syncPolicy:
-              automated:
-                prune: true
-                selfHeal: true
-              syncOptions:
-                - CreateNamespace=true
-
-    - name: "Verify and Fetch ArgoCD Application Details"
-      kubernetes.core.k8s_info:
-        kubeconfig: "{{ kubeconfig_path }}"
-        api_version: argoproj.io/v1alpha1
-        kind: Application
-        name: smart-meds
-        namespace: argocd
-      register: app_verification
-
-    - name: "Print Detailed Application Status (Sync & Health)"
-      ansible.builtin.debug:
-        msg:
-          - "Application Name: {{ app_verification.resources[0].metadata.name }}"
-          - "Sync Status: {{ app_verification.resources[0].status.sync.status | default('Unknown') }}"
-          - "Health Status: {{ app_verification.resources[0].status.health.status | default('Unknown') }}"
+    - name: "Deploy Smart Meds ArgoCD Application via Manifest"
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: argoproj.io/v1alpha1
+        kind:
