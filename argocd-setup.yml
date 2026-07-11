@@ -1,48 +1,56 @@
 ---
-- name: "Deploy ArgoCD for GitOps"
+- name: "Deploy ArgoCD for GitOps (Production Standard)"
   hosts: masters
   become: yes
   vars:
     kubeconfig_path: /etc/kubernetes/admin.conf
+    argocd_version: "7.7.0"
+    argocd_admin_password_hash: "$2a$10$rRyOOCXn3Z7Z2FwNfV68Ie1KRHBWC1gR2gXN1e3xM2J7/3f08m22q"
 
   tasks:
-    - name: "Create argocd namespace"
-      shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-
-    - name: "Add and update ArgoCD Helm repository"
-      shell: |
-        helm repo add argo https://argoproj.github.io/argo-helm
-        helm repo update
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-
-    - name: "Install/Upgrade ArgoCD using Helm"
-      shell: |
-        helm upgrade --install argocd argo/argo-cd \
-          -n argocd \
-          --set configs.secret.argocdServerAdminPassword='admin' \
-          --wait --timeout 10m
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
+    - name: "Install ArgoCD using Helm Module"
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: argocd
+        chart_ref: argo/argo-cd
+        chart_version: "{{ argocd_version }}"
+        chart_repo_url: https://argoproj.github.io/argo-helm
+        release_namespace: argocd
+        create_namespace: true
+        wait: true
+        timeout: "10m0s"
+        values:
+          configs:
+            secret:
+              argocdServerAdminPassword: "{{ argocd_admin_password_hash }}"
+      register: helm_result
+      until: helm_result is succeeded
       retries: 3
-      delay: 10
+      delay: 15
+      no_log: true
 
-    - name: "Wait for ArgoCD server to be ready"
-      shell: |
+    - name: "Wait for ArgoCD Application CRD to be established"
+      ansible.builtin.shell: |
+        kubectl wait --for condition=Established crd/applications.argoproj.io --timeout=120s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: "Wait for ArgoCD server pods to be fully ready"
+      ansible.builtin.shell: |
         kubectl wait --for=condition=ready pod \
           -l app.kubernetes.io/name=argocd-server \
           -n argocd \
           --timeout=300s
       environment:
         KUBECONFIG: "{{ kubeconfig_path }}"
-      ignore_errors: yes
+      changed_when: false
 
-    - name: "Create Smart Meds ArgoCD Application manifest"
-      copy:
-        dest: /tmp/smart-meds-app.yaml
-        content: |
+    - name: "Deploy Smart Meds ArgoCD Application via K8s Module"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
           apiVersion: argoproj.io/v1alpha1
           kind: Application
           metadata:
@@ -62,23 +70,20 @@
                 prune: true
                 selfHeal: true
               syncOptions:
-              - CreateNamespace=true
+                - CreateNamespace=true
 
-    - name: "Apply Smart Meds Application to ArgoCD"
-      shell: kubectl apply -f /tmp/smart-meds-app.yaml
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
+    - name: "Verify and Fetch ArgoCD Application Details"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: smart-meds
+        namespace: argocd
+      register: app_verification
 
-    - name: "Display and Register ArgoCD status"
-      shell: |
-        echo "=== Status ==="
-        kubectl get pods -n argocd
-        echo "=== Apps ==="
-        kubectl get applications -n argocd
-      environment:
-        KUBECONFIG: "{{ kubeconfig_path }}"
-      register: argocd_status
-
-    - name: "Print ArgoCD status to console"
-      debug:
-        msg: "{{ argocd_status.stdout_lines }}"
+    - name: "Print Detailed Application Status (Sync & Health)"
+      ansible.builtin.debug:
+        msg:
+          - "Application Name: {{ app_verification.resources[0].metadata.name }}"
+          - "Sync Status: {{ app_verification.resources[0].status.sync.status | default('Unknown') }}"
+          - "Health Status: {{ app_verification.resources[0].status.health.status | default('Unknown') }}"
