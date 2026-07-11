@@ -1,96 +1,89 @@
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "smart-meds.fullname" . }}
-  labels:
-    {{- include "smart-meds.labels" . | nindent 4 }}
-spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-  {{- end }}
-  selector:
-    matchLabels:
-      {{- include "smart-meds.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/metrics"
-      labels:
-        {{- include "smart-meds.selectorLabels" . | nindent 8 }}
-    spec:
-      serviceAccountName: {{ include "smart-meds.serviceAccountName" . }}
-      securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      containers:
-      - name: {{ .Chart.Name }}
-        securityContext:
-          {{- toYaml .Values.securityContext | nindent 12 }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
-        imagePullPolicy: {{ .Values.image.pullPolicy }}
-        ports:
-        - name: http
-          containerPort: {{ .Values.service.targetPort }}
-          protocol: TCP
-        - name: metrics
-          containerPort: 8080
-          protocol: TCP
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        resources:
-          {{- toYaml .Values.resources | nindent 12 }}
-        env:
-        {{- range $key, $value := .Values.environment }}
-        - name: {{ $key }}
-          value: {{ $value | quote }}
-        {{- end }}
-        - name: DATABASE_HOST
-          value: {{ .Values.database.host }}
-        - name: DATABASE_PORT
-          value: {{ .Values.database.port | quote }}
-        - name: DATABASE_NAME
-          value: {{ .Values.database.name }}
-        - name: DATABASE_USER
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "smart-meds.fullname" . }}-db
-              key: username
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "smart-meds.fullname" . }}-db
-              key: password
-        {{- if .Values.persistence.enabled }}
-        volumeMounts:
-        - name: data
-          mountPath: /data
-        {{- end }}
-      {{- if .Values.persistence.enabled }}
-      volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ include "smart-meds.fullname" . }}-pvc
-      {{- end }}
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+---
+- name: "Deploy ArgoCD for GitOps"
+  hosts: masters
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: "Create argocd namespace"
+      shell: |
+        kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: "Install ArgoCD using Helm"
+      shell: |
+        helm repo add argo https://argoproj.github.io/argo-helm
+        helm repo update
+        helm install argocd argo/argo-cd \
+          -n argocd \
+          --set configs.secret.argocdServerAdminPassword='admin' \
+          --wait \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /root/.kube/config
+      retries: 3
+      delay: 10
+
+    - name: "Wait for ArgoCD to be ready"
+      shell: |
+        kubectl wait --for=condition=ready pod \
+          -l app.kubernetes.io/name=argocd-server \
+          -n argocd \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      ignore_errors: yes
+
+    - name: "Create Smart Meds ArgoCD Application"
+      copy:
+        content: |
+          apiVersion: argoproj.io/v1alpha1
+          kind: Application
+          metadata:
+            name: smart-meds
+            namespace: argocd
+          spec:
+            project: default
+            source:
+              repoURL: https://github.com/nhahub/NHA-4-145.git
+              targetRevision: main
+              path: helm/smart-meds
+            destination:
+              server: https://kubernetes.default.svc
+              namespace: smart-meds
+            syncPolicy:
+              automated:
+                prune: true
+                selfHeal: true
+              syncOptions:
+              - CreateNamespace=true
+        dest: /tmp/smart-meds-app.yaml
+
+    - name: "Apply Smart Meds ArgoCD Application"
+      shell: |
+        kubectl apply -f /tmp/smart-meds-app.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: "Display ArgoCD status"
+      shell: |
+        echo "========== ARGOCD STATUS =========="
+        kubectl get pods -n argocd
+        echo ""
+        echo "========== ARGOCD SERVICE =========="
+        kubectl get svc -n argocd
+        echo ""
+        echo "========== ARGOCD ACCESS =========="
+        echo "Username: admin"
+        echo "Password: admin"
+        echo "Port forward: kubectl port-forward -n argocd svc/argocd-server 8080:443"
+        echo ""
+        echo "========== ARGOCD APPLICATIONS =========="
+        kubectl get applications -n argocd
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: argocd_status
+
+    - name: "Print ArgoCD status"
+      debug:
+        msg: "{{ argocd_status.stdout_lines }}"
