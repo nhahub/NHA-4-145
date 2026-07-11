@@ -1,0 +1,41 @@
+replicaCount: 2
+
+image:
+  repository: ahmed544/smart-med-frontend
+  tag: v1.0.0
+  pullPolicy: IfNotPresent
+
+nameOverride: smart-meds-frontend
+fullnameOverride: smart-meds-frontend
+
+namespace: smart-meds
+
+service:
+  type: NodePort
+  port: 80
+  targetPort: 80
+  nodePort: 30000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  path: /
+  port: 80
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  path: /
+  port: 80
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+monitoring:
+  enabled: true
+  scrapePort: "80"
