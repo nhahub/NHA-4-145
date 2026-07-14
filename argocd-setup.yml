@@ -1,0 +1,138 @@
+---
+- name: "Deploy ArgoCD for GitOps (EC2 Optimized - Production Ready)"
+  hosts: masters
+  become: yes
+  vars:
+    kubeconfig_path: /home/ec2-user/.kube/config
+    argocd_version: "7.7.0"
+
+  tasks:
+    - name: "Add ArgoCD Helm repository safely"
+      ansible.builtin.shell: |
+        helm repo add argo https://argoproj.github.io/argo-helm || true
+        helm repo update
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: helm_repo_result
+      until: helm_repo_result.rc == 0
+      retries: 3
+      delay: 10
+
+    - name: "Install/Upgrade ArgoCD using Helm CLI (With Auto-Namespace)"
+      ansible.builtin.shell: |
+        helm upgrade --install argocd argo/argo-cd \
+          --namespace argocd \
+          --create-namespace \
+          --version "{{ argocd_version }}" \
+          --wait \
+          --timeout 10m
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: helm_install_result
+      until: helm_install_result.rc == 0
+      retries: 3
+      delay: 15
+
+    - name: "Wait until ArgoCD Application CRD exists in API Server"
+      ansible.builtin.command:
+        cmd: kubectl get crd applications.argoproj.io
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: crd_check
+      retries: 20
+      delay: 5
+      until: crd_check.rc == 0
+      changed_when: false
+
+    - name: "Wait for ArgoCD deployments rollout (Rock-Solid Rollout Check)"
+      ansible.builtin.command:
+        cmd: >
+          kubectl rollout status deployment/{{ item }}
+          -n argocd
+          --timeout=300s
+      loop:
+        - argocd-server
+        - argocd-repo-server
+        - argocd-application-controller
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      changed_when: false
+
+    - name: "Deploy Smart Meds ArgoCD Application via Manifest"
+      ansible.builtin.shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: argoproj.io/v1alpha1
+        kind: Application
+        metadata:
+          name: smart-meds
+          namespace: argocd
+        spec:
+          project: default
+          source:
+            repoURL: https://github.com/nhahub/NHA-4-145.git
+            targetRevision: ansible-k8s
+            path: smart-meds-frontend
+          destination:
+            server: https://kubernetes.default.svc
+            namespace: smart-meds
+          syncPolicy:
+            automated:
+              prune: true
+              selfHeal: true
+            syncOptions:
+              - CreateNamespace=true
+        EOF
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: app_deploy_result
+      until: app_deploy_result.rc == 0
+      retries: 3
+      delay: 10
+
+    - name: "Fetch Dynamically Generated ArgoCD Admin Password (With Retry Protection)"
+      ansible.builtin.shell: |
+        kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: initial_password
+      until: initial_password.stdout != ""
+      retries: 10
+      delay: 10
+      changed_when: false
+
+    - name: "Fetch ArgoCD Application Sync and Health Status"
+      ansible.builtin.command:
+        cmd: kubectl get application smart-meds -n argocd -o jsonpath='{.status.sync.status} {.status.health.status}'
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin:{{ ansible_env.PATH }}"
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      become_user: ec2-user
+      register: app_status
+      failed_when:
+        - app_status.rc != 0
+        - "'NotFound' not in app_status.stderr"
+      changed_when: false
+
+    - name: "Print Production Deployment Report"
+      ansible.builtin.debug:
+        msg:
+          - "=========================================================="
+          - "🚀 ARGO CD DEPLOYMENT COMPLETE 🚀"
+          - "=========================================================="
+          - "Initial Admin Password: {{ initial_password.stdout }}"
+          - "Note: Please change this password after your first login!"
+          - "=========================================================="
+          - "Application Status (Sync / Health):"
+          - "{{ app_status.stdout | default('Syncing / Progressive Check...') }}"

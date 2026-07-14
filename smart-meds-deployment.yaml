@@ -1,0 +1,179 @@
+# ========== SMART MEDS BACKEND DEPLOYMENT ==========
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-meds-backend
+  namespace: smart-meds
+  labels:
+    app: smart-meds-backend
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smart-meds-backend
+  template:
+    metadata:
+      labels:
+        app: smart-meds-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+    spec:
+      containers:
+      - name: backend
+        image: ahmed544/smart-med-backend:v1.0.0
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 5000
+          protocol: TCP
+        
+        # Resource limits
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        
+        # Environment variables
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "5000"
+      
+      # Restart policy
+      restartPolicy: Always
+
+---
+# ========== BACKEND SERVICE ==========
+apiVersion: v1
+kind: Service
+metadata:
+  name: smart-meds-backend
+  namespace: smart-meds
+  labels:
+    app: smart-meds-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: smart-meds-backend
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+    protocol: TCP
+
+---
+# ========== SMART MEDS FRONTEND DEPLOYMENT ==========
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smart-meds-frontend
+  namespace: smart-meds
+  labels:
+    app: smart-meds-frontend
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smart-meds-frontend
+  template:
+    metadata:
+      labels:
+        app: smart-meds-frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+    spec:
+      containers:
+      - name: frontend
+        image: ahmed544/smart-med-frontend:v1.0.0
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 80
+          protocol: TCP
+        
+        # Resource limits
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        
+        # Environment variables
+        env:
+        - name: REACT_APP_ENV
+          value: "production"
+        - name: REACT_APP_LOG_LEVEL
+          value: "info"
+        - name: REACT_APP_API_URL
+          value: "http://smart-meds-backend:5000"
+      
+      # Restart policy
+      restartPolicy: Always
+
+---
+# ========== FRONTEND SERVICE (NodePort) ==========
+apiVersion: v1
+kind: Service
+metadata:
+  name: smart-meds-frontend
+  namespace: smart-meds
+  labels:
+    app: smart-meds-frontend
+spec:
+  type: NodePort
+  selector:
+    app: smart-meds-frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30000
+    protocol: TCP

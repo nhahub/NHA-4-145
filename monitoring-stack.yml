@@ -1,0 +1,162 @@
+---
+- name: "Deploy Monitoring Stack (Prometheus, Grafana, LOKI)"
+  hosts: masters
+  gather_facts: yes
+  become: yes
+  tasks:
+    - name: "Create monitoring namespace"
+      shell: |
+        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: "Add Prometheus Helm repo"
+      shell: |
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo add grafana https://grafana.github.io/helm-charts
+        helm repo update
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: "Create Prometheus values file"
+      copy:
+        content: |
+          prometheus:
+            prometheusSpec:
+              retention: 15d
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 50Gi
+              
+              serviceMonitorSelectorNilUsesHelmValues: false
+              podMonitorSelectorNilUsesHelmValues: false
+
+          grafana:
+            adminPassword: "admin"
+            persistence:
+              enabled: true
+              size: 10Gi
+
+          alertmanager:
+            enabled: true
+            config:
+              global:
+                resolve_timeout: 5m
+        dest: /tmp/prometheus-values.yaml
+
+    - name: "Install Prometheus stack"
+      shell: |
+        helm install prometheus prometheus-community/kube-prometheus-stack \
+          -n monitoring \
+          -f /tmp/prometheus-values.yaml \
+          --wait \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /root/.kube/config
+      retries: 3
+      delay: 10
+
+    - name: "Create LOKI values file"
+      copy:
+        content: |
+          loki:
+            enabled: true
+            persistence:
+              enabled: true
+              size: 100Gi
+            config:
+              auth_enabled: false
+              ingester:
+                chunk_idle_period: 3m
+                max_chunk_age: 1h
+              limits_config:
+                enforce_metric_name: false
+                reject_old_samples: true
+                reject_old_samples_max_age: 168h
+
+          promtail:
+            enabled: true
+            config:
+              clients:
+              - url: http://loki:3100/loki/api/v1/push
+              scrape_configs:
+              - job_name: kubernetes-pods
+                kubernetes_sd_configs:
+                - role: pod
+                relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_node_name]
+                  target_label: node_name
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+        dest: /tmp/loki-values.yaml
+
+    - name: "Install LOKI stack"
+      shell: |
+        helm install loki grafana/loki-stack \
+          -n monitoring \
+          -f /tmp/loki-values.yaml \
+          --wait \
+          --timeout 10m
+      environment:
+        KUBECONFIG: /root/.kube/config
+      retries: 3
+      delay: 10
+
+    - name: "Wait for Prometheus to be ready"
+      shell: |
+        kubectl wait --for=condition=ready pod \
+          -l app.kubernetes.io/name=prometheus \
+          -n monitoring \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      ignore_errors: yes
+
+    - name: "Wait for Grafana to be ready"
+      shell: |
+        kubectl wait --for=condition=ready pod \
+          -l app.kubernetes.io/name=grafana \
+          -n monitoring \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      ignore_errors: yes
+
+    - name: "Wait for LOKI to be ready"
+      shell: |
+        kubectl wait --for=condition=ready pod \
+          -l app=loki \
+          -n monitoring \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      ignore_errors: yes
+
+    - name: "Display monitoring stack status"
+      shell: |
+        echo "========== MONITORING STACK STATUS =========="
+        kubectl get pods -n monitoring
+        echo ""
+        echo "========== SERVICES =========="
+        kubectl get svc -n monitoring
+        echo ""
+        echo "========== GRAFANA ACCESS =========="
+        echo "Username: admin"
+        echo "Password: admin"
+        echo "Port forward: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
+        echo ""
+        echo "========== PROMETHEUS ACCESS =========="
+        echo "Port forward: kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090"
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: monitoring_status
+
+    - name: "Print monitoring status"
+      debug:
+        msg: "{{ monitoring_status.stdout_lines }}"
